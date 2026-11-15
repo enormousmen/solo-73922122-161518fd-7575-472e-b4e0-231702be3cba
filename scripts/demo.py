@@ -9,6 +9,7 @@
   5. 进程在“分片已写 S3、落库前”崩溃 -> 重启对账 -> 仅补缺片
   6. 进程在“合并成功、回执前”崩溃 -> 重启续完 -> 重试幂等不重复发布
   7. 坏 OME-TIFF 被拒，远端对象删除，原件不开放
+  8. 双通道 CYX uint16 双染料图像 NNLS 解混，饱和像素 NaN，结果可下载
 """
 from __future__ import annotations
 
@@ -300,6 +301,72 @@ def scenario_7_bad_image():
     check(status == 409, "原件查询不开放")
 
 
+def scenario_8_unmixing():
+    step("场景 8：双染料 CYX uint16 图像 NNLS 解混，饱和像素 NaN，结果可下载")
+    blob = (SAMPLE_DIR / "two-dye-cyx.ome.tiff").read_bytes()
+    up = create_upload("DEMO-8", "two-dye-cyx.ome.tiff", len(blob))
+    put_part(up["upload_id"], 1, blob)
+    status, done = complete(up["upload_id"])
+    check(status == 200 and done["status"] == "completed", "原件入湖完成")
+    uid = up["upload_id"]
+
+    matrix = [[1.0, 0.25], [0.4, 1.0]]
+    payload = json.dumps({"dye_names": ["Dye-A", "Dye-B"],
+                          "response_matrix": matrix}).encode()
+    status, job = _request("POST", f"/uploads/{uid}/unmix", payload,
+                           {"Content-Type": "application/json"})
+    check(status == 201 and job["status"] == "completed",
+          f"解混任务完成（HTTP {status}）")
+    print(f"    有效像素 {job['valid_pixels']}，饱和像素 {job['saturated_pixels']}")
+    check(job["saturated_pixels"] == 2, "两个饱和像素被识别")
+    check(job["width"] == 128 and job["height"] == 128, "尺寸回传正确")
+
+    # 下载结果并校验：float32、两通道、OME 通道名为染料名
+    status, result_blob, headers = _request_with_headers(
+        "GET", f"/unmix-jobs/{job['job_id']}/result")
+    check(status == 200, "解混结果可下载")
+    check(headers["Content-Type"] == "image/tiff", "Content-Type 为 image/tiff")
+    check(int(headers["Content-Length"]) == job["result_bytes"],
+          "结果字节数与记录一致")
+    _assert_unmixed_tiff(result_blob)
+
+    # 任务可查询、可列举
+    status, got = _request("GET", f"/unmix-jobs/{job['job_id']}")
+    check(status == 200 and got["dye_names"] == ["Dye-A", "Dye-B"], "任务查询")
+    status, listed = _request("GET", f"/uploads/{uid}/unmix")
+    check(status == 200 and len(listed) == 1, "按上传列举解混任务")
+
+    # 原件保持不变
+    _, original, _ = _request_with_headers("GET", f"/uploads/{uid}/object")
+    check(original == blob, "原件逐字节未被解混改动")
+
+    # 非法矩阵（条件数 2000 > 1000）明确 422，且不产生结果对象
+    bad = json.dumps({"dye_names": ["Dye-A", "Dye-B"],
+                      "response_matrix": [[1.0, 1.0], [0.0, 0.001]]}).encode()
+    status, err = _request("POST", f"/uploads/{uid}/unmix", bad,
+                           {"Content-Type": "application/json"})
+    check(status == 422 and "条件数" in err["error"]["message"],
+          f"病态矩阵被 422 拒绝: {err['error']['message'][:40]}...")
+
+
+def _assert_unmixed_tiff(blob: bytes) -> None:
+    """仅用 numpy/tifffile 校验下载到的解混产物（容器内已安装）。"""
+    import io
+
+    import tifffile
+
+    with tifffile.TiffFile(io.BytesIO(blob)) as tif:
+        arr = tif.asarray()
+        check(str(arr.dtype) == "float32", "输出 dtype 为 float32")
+        check(arr.shape == (2, 128, 128), f"输出形状为 2×128×128，实际 {arr.shape}")
+        check("".join(tif.series[0].axes) == "CYX", "输出轴序为 CYX")
+        ome = tif.ome_metadata
+        check('Name="Dye-A"' in ome and 'Name="Dye-B"' in ome,
+              "OME-XML 通道名使用染料名称")
+        saturated_nan = int(__import__("numpy").isnan(arr[0]).sum())
+        check(saturated_nan == 2, f"饱和像素两路均为 NaN（NaN 数={saturated_nan}）")
+
+
 def main() -> None:
     wait_api_ready()
     print(f"API: {API}  样例目录: {SAMPLE_DIR}")
@@ -310,6 +377,7 @@ def main() -> None:
     scenario_5_crash_after_part()
     scenario_6_crash_after_merge()
     scenario_7_bad_image()
+    scenario_8_unmixing()
     print("\n全部演示场景通过。可在 http://localhost:8000/docs 手动操作全流程。")
 
 

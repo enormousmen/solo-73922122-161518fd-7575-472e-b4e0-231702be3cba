@@ -127,11 +127,18 @@ class FakeS3:
         with self._lock:
             self.objects.pop(object_key, None)
 
+    def put_object(self, object_key: str, body: bytes,
+                   content_type: str = "application/octet-stream") -> dict:
+        with self._lock:
+            self.objects[object_key] = bytes(body)
+            return {"size": len(body), "etag": sha256_hex(body)[:32]}
+
     def download_to_file(self, object_key: str, dest_path: str) -> None:
         with self._lock:
             data = self.objects.get(object_key)
             if data is None:
-                raise FakeS3Error("NoSuchKey")
+                from app.errors import StorageError
+                raise StorageError(f"下载对象失败: NoSuchKey {object_key}")
             Path(dest_path).write_bytes(data)
 
     def get_object_stream(self, object_key: str):
@@ -174,3 +181,31 @@ def make_ome_tiff(path: Path, *, width: int = 64, height: int = 48,
 
 def split_parts(blob: bytes) -> list[bytes]:
     return [blob[i:i + PART_SIZE] for i in range(0, len(blob), PART_SIZE)]
+
+
+def make_cyx_ome_tiff(path: Path, *, width: int = 32, height: int = 24,
+                      channels: int = 2, dtype: str = "uint16",
+                      axes: str = "CYX", saturated: bool = False) -> bytes:
+    """生成双通道 CYX uint16 OME-TIFF（合成数据，无隐私内容）。"""
+    import numpy as np
+    import tifffile
+
+    rng = np.random.default_rng(7)
+    info = np.iinfo(np.dtype(dtype)) if np.dtype(dtype).kind == "u" else None
+    data = rng.integers(0, min(4096, info.max if info else 4096),
+                        size=(channels, height, width)).astype(dtype)
+    if saturated:
+        data[0, 0, 0] = 65535 if dtype == "uint16" else info.max
+        data[1, 2, 3] = 65535 if dtype == "uint16" else info.max
+    with tifffile.TiffWriter(path) as writer:
+        writer.write(data, photometric="minisblack", metadata={"axes": axes})
+    return path.read_bytes()
+
+
+def complete_upload_with_blob(svc, store, sample_id: str, filename: str,
+                              blob: bytes) -> dict:
+    """便捷封装：把一段 OME-TIFF 字节走完入湖全流程，返回 upload 行。"""
+    upload = svc.create_upload(sample_id, filename, len(blob), None)
+    svc.put_part(upload["upload_id"], 1, blob)
+    svc.complete(upload["upload_id"])
+    return svc.get_upload(upload["upload_id"])

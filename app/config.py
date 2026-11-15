@@ -12,6 +12,12 @@ PART_SIZE = 8 * 1024 * 1024
 MIN_PART_NUMBER = 1
 MAX_PART_NUMBER = 10000
 
+# 解混输入约束：解码后的像素缓冲上限 16 MiB、响应矩阵条件数上限、饱和电平
+MAX_DECODED_BYTES = 16 * 1024 * 1024
+MAX_MATRIX_CONDITION = 1000.0
+SATURATION_LEVEL = 65535
+UNMIX_CHANNELS = 2
+
 
 def _env(name: str, default: str) -> str:
     value = os.environ.get(name)

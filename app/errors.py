@@ -37,6 +37,12 @@ class BadImageError(ApiError):
     code = "bad_image"
 
 
+class UnmixingError(ApiError):
+    """解混请求无法处理（矩阵非法、图像不符合约束、全部像素无效等）。"""
+    status_code = 422
+    code = "unmixing_error"
+
+
 class StorageError(ApiError):
     status_code = 502
     code = "storage_error"

@@ -15,8 +15,6 @@ import sys
 import threading
 import time
 
-import numpy as np
-import tifffile
 import uvicorn
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -29,18 +27,15 @@ from tests.conftest import FakeS3  # noqa: E402
 
 
 def generate_samples(out: pathlib.Path) -> None:
-    out.mkdir(parents=True, exist_ok=True)
-    rng = np.random.default_rng(42)
-    large = (np.arange(3 * 2048 * 2048, dtype=np.uint16).reshape(3, 2048, 2048)
-             + rng.integers(0, 64, size=(3, 2048, 2048), dtype=np.uint16))
-    with tifffile.TiffWriter(out / "good-large.ome.tiff") as w:
-        w.write(large, photometric="minisblack", metadata={"axes": "ZYX"})
-    small = rng.integers(0, 256, size=(256, 256), dtype=np.uint8)
-    with tifffile.TiffWriter(out / "good-small.ome.tiff") as w:
-        w.write(small, photometric="minisblack", metadata={"axes": "YX"})
-    tifffile.imwrite(out / "bad-no-ome.tiff",
-                     np.zeros((2, 64, 64), dtype=np.uint8),
-                     photometric="minisblack")
+    # 与容器内 scripts/generate_samples.py 保持同一套合成数据
+    from scripts import generate_samples
+
+    old_out = generate_samples.OUT_DIR
+    generate_samples.OUT_DIR = out
+    try:
+        generate_samples.main()
+    finally:
+        generate_samples.OUT_DIR = old_out
 
 
 class SilentCrash(RuntimeError):

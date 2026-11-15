@@ -22,17 +22,21 @@ from .schemas import (
     DimensionsResponse,
     FaultArmRequest,
     PartsResponse,
+    UnmixJobResponse,
+    UnmixRequest,
     UploadResponse,
 )
 from .service import UploadService
 from .storage import S3Store
+from .unmix_service import UnmixingService
 
 service: UploadService | None = None
+unmix_service: UnmixingService | None = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global service
+    global service, unmix_service
     init_db()
     settings.tmp_dir.mkdir(parents=True, exist_ok=True)
     store = S3Store()
@@ -50,6 +54,7 @@ async def lifespan(app: FastAPI):
         raise RuntimeError(f"无法连接对象存储 {settings.s3_endpoint}") from last_exc
 
     service = UploadService(store)
+    unmix_service = UnmixingService(store)
     if settings.recover_on_startup:
         service.recover_on_startup()
     yield
@@ -184,6 +189,57 @@ async def download_object(upload_id: str):
 async def health():
     return {"status": "ok", "part_size": PART_SIZE,
             "faults_enabled": fault_injector.enabled}
+
+
+# --------------------------------------------------------------- 解混 API
+@app.post("/uploads/{upload_id}/unmix", response_model=UnmixJobResponse,
+          status_code=201, tags=["染料解混"])
+async def create_unmix_job(upload_id: str, payload: UnmixRequest):
+    """对已入湖的双染料 CYX uint16 OME-TIFF 执行 NNLS 解混。
+
+    成功返回解混任务记录（含结果对象键与像素统计），失败给出明确错误，
+    不产生残缺结果；原件保持不变。
+    """
+    return unmix_service.create_job(
+        upload_id, payload.dye_names, payload.response_matrix
+    )
+
+
+@app.get("/uploads/{upload_id}/unmix", response_model=list[UnmixJobResponse],
+         tags=["染料解混"])
+async def list_unmix_jobs(upload_id: str):
+    """列出该上传的全部解混任务（含失败任务及错误原因）。"""
+    return unmix_service.list_jobs(upload_id)
+
+
+@app.get("/unmix-jobs/{job_id}", response_model=UnmixJobResponse,
+         tags=["染料解混"])
+async def get_unmix_job(job_id: str):
+    """查询单个解混任务状态与结果元数据。"""
+    return unmix_service.get_job(job_id)
+
+
+@app.get("/unmix-jobs/{job_id}/result", tags=["染料解混"])
+async def download_unmix_result(job_id: str):
+    """下载解混产物：两通道 float32 OME-TIFF（通道名为染料名称）。"""
+    record, body = unmix_service.open_result_stream(job_id)
+
+    def iter_stream():
+        try:
+            for chunk in body.iter_chunks(chunk_size=PART_SIZE):
+                yield chunk
+        finally:
+            body.close()
+
+    filename = f"{job_id}-unmixed.ome.tiff"
+    return StreamingResponse(
+        iter_stream(),
+        media_type="image/tiff",
+        headers={
+            "Content-Length": str(record["result_bytes"]),
+            "Content-Disposition": f'attachment; filename="{filename}"',
+        },
+    )
 
 
 # ------------------------------------------------------------ 故障注入（演示）

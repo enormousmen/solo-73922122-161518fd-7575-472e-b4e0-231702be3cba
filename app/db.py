@@ -44,8 +44,25 @@ CREATE TABLE IF NOT EXISTS parts (
     PRIMARY KEY (upload_id, part_number)
 );
 
+CREATE TABLE IF NOT EXISTS unmix_jobs (
+    job_id            TEXT PRIMARY KEY,
+    upload_id         TEXT NOT NULL REFERENCES uploads(upload_id),
+    status            TEXT NOT NULL CHECK (status IN ('completed','failed')),
+    dye_names         TEXT NOT NULL,
+    response_matrix   TEXT NOT NULL,
+    result_object_key TEXT,
+    result_bytes      INTEGER,
+    width             INTEGER,
+    height            INTEGER,
+    saturated_pixels  INTEGER,
+    valid_pixels      INTEGER,
+    error_message     TEXT,
+    created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+
 CREATE INDEX IF NOT EXISTS idx_uploads_sample ON uploads(sample_id);
 CREATE INDEX IF NOT EXISTS idx_uploads_status ON uploads(status);
+CREATE INDEX IF NOT EXISTS idx_unmix_jobs_upload ON unmix_jobs(upload_id);
 """
 
 

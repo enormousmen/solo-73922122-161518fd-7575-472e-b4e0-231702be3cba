@@ -1,12 +1,15 @@
 """Pydantic 请求/响应模型。"""
 from __future__ import annotations
 
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field, PositiveInt
 
 # 上传任务生命周期状态
 UploadStatus = Literal["open", "completing", "completed", "aborted", "invalid"]
+
+# 解混任务状态
+UnmixJobStatus = Literal["completed", "failed"]
 
 
 class CreateUploadRequest(BaseModel):
@@ -78,3 +81,34 @@ class FaultArmRequest(BaseModel):
     # crash_after_merge：S3 合并成功后、标记完成前崩溃，演示合并后回执丢失
     fault: Literal["crash_after_part", "crash_after_merge"]
     part_number: int | None = None
+
+
+# --------------------------------------------------------------- 解混 API
+class UnmixRequest(BaseModel):
+    dye_names: Annotated[list[Annotated[str, Field(min_length=1, max_length=100)]],
+                         Field(min_length=2, max_length=2,
+                               description=(
+                                   "两种染料名称（顺序对应响应矩阵的两列，"
+                                   "也用作输出通道名）"))]
+    response_matrix: list[list[float]] = Field(
+        ...,
+        description=(
+            "2×2 响应矩阵：行对应两路探测器（与原件通道顺序一致），"
+            "列对应两种染料（与 dye_names 顺序一致）"
+        ),
+    )
+
+
+class UnmixJobResponse(BaseModel):
+    job_id: str
+    upload_id: str
+    status: UnmixJobStatus
+    dye_names: list[str]
+    response_matrix: list[list[float]]
+    result_object_key: str | None = None
+    result_bytes: int | None = None
+    width: int | None = None
+    height: int | None = None
+    saturated_pixels: int | None = None
+    valid_pixels: int | None = None
+    error_message: str | None = None
